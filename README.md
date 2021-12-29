@@ -1,4 +1,8 @@
 # NSIS CLR Loader 
+## Version 1.1.2:
+- Build with Visual Studio 2022 On Windows 10 x64
+- Added support for auto loading dependent assemblies
+
 ## Version 1.1.1:
 - Build with Visual Studio 2019 Professional On Windows 10 x64
 - Moved to .NET 4.x, there are no Microsoft supported Window versions that cannot support .NET 4.x any longer

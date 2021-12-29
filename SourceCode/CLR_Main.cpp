@@ -15,6 +15,7 @@ HWND g_hwndParent;
 ref struct MyData
 {
 	static Dictionary<String^, Assembly^>^ loaded_assemblies = gcnew Dictionary<String^, Assembly^>(StringComparer::InvariantCultureIgnoreCase);
+	static String^ currentLoadPath;
 };
 
 System::Reflection::Assembly^ LoadAssembly(String^ filename)
@@ -22,15 +23,15 @@ System::Reflection::Assembly^ LoadAssembly(String^ filename)
 	Assembly^ assembly = nullptr;
 	if (!MyData::loaded_assemblies->TryGetValue(filename, assembly))
 	{
-		FileStream ^fs = File::Open(filename, FileMode::Open);
+		FileStream^ fs = File::Open(filename, FileMode::Open);
 		if (fs != nullptr)
 		{
-			MemoryStream ^ms = gcnew MemoryStream();
+			MemoryStream^ ms = gcnew MemoryStream();
 			if (ms != nullptr)
 			{
-				cli::array<unsigned char> ^buffer = gcnew cli::array<unsigned char>(1024);
+				cli::array<unsigned char>^ buffer = gcnew cli::array<unsigned char>(1024);
 				int read = 0;
-				while ((read = fs->Read(buffer, 0, 1024))>0)
+				while ((read = fs->Read(buffer, 0, 1024)) > 0)
 					ms->Write(buffer, 0, read);
 				assembly = Assembly::Load(ms->ToArray());
 				ms->Close();
@@ -44,41 +45,53 @@ System::Reflection::Assembly^ LoadAssembly(String^ filename)
 	return assembly;
 }
 
+static Assembly^ MyResolveEventHandler(Object^ sender, ResolveEventArgs^ args)
+{
+	AssemblyName^ assemblyName = gcnew AssemblyName(args->Name);
+	String^ sDLLName = Path::Combine(MyData::currentLoadPath == nullptr ? "." : MyData::currentLoadPath, assemblyName->Name);
+	if (!sDLLName->ToLower()->EndsWith(".dll"))
+		sDLLName += ".dll";
+	return LoadAssembly(sDLLName);
+}
+
 char* CallCLR(string DllName, string ClassWithNamespace, string MethodName, vector<string> Args)
 {
 	try
 	{
 		// get DLLName, Namespace, Class and Method
-		String ^sDLLName = (gcnew String(DllName.c_str()))->Trim();
+		String^ sDLLName = (gcnew String(DllName.c_str()))->Trim();
 		if (!sDLLName->ToLower()->EndsWith(".dll"))
 			sDLLName += ".dll";
-		String ^sClassWithNamespace = (gcnew String(ClassWithNamespace.c_str()))->Trim();
-		String ^sMethod = (gcnew String(MethodName.c_str()))->Trim();
+		String^ sClassWithNamespace = (gcnew String(ClassWithNamespace.c_str()))->Trim();
+		String^ sMethod = (gcnew String(MethodName.c_str()))->Trim();
 
+		AppDomain::CurrentDomain->AssemblyResolve += gcnew ResolveEventHandler(&MyResolveEventHandler);
+		System::Reflection::Assembly^ assembly;
+		MyData::currentLoadPath = (gcnew FileInfo(sDLLName))->Directory->FullName;
 		// load assembly (is closed on disk right away)
-		System::Reflection::Assembly ^assembly = LoadAssembly(".\\" + sDLLName);
+		assembly = LoadAssembly(".\\" + sDLLName);
 		if (assembly == nullptr)
 			throw gcnew Exception("Error loading .NET assembly");
 
 		// attempt to find the class
 		bool found = false;
-		cli::array<Type ^> ^types = assembly->GetExportedTypes();
-		for (int i=0; i<types->Length; i++)
+		cli::array<Type^>^ types = assembly->GetExportedTypes();
+		for (int i = 0; i < types->Length; i++)
 		{
 			if (types[i]->FullName == sClassWithNamespace)
 			{
 				found = true;
 
 				// found the class, create instance, get methodinfo and parameter info
-				System::Object ^instance = assembly->CreateInstance(sClassWithNamespace);
-				System::Reflection::MethodInfo ^methodinfo = instance->GetType()->GetMethod(sMethod);
+				System::Object^ instance = assembly->CreateInstance(sClassWithNamespace);
+				System::Reflection::MethodInfo^ methodinfo = instance->GetType()->GetMethod(sMethod);
 				if (methodinfo == nullptr)
 				{
 					throw gcnew Exception(String::Format(
 						"Method {0} not found in class {1}",
 						sMethod, sClassWithNamespace));
 				}
-				cli::array<ParameterInfo ^> ^paraminfos = methodinfo->GetParameters();								
+				cli::array<ParameterInfo^>^ paraminfos = methodinfo->GetParameters();
 
 				// check that there are the same number of parameters in input and in dll to be called
 				if (Args.size() != paraminfos->Length)
@@ -88,8 +101,8 @@ char* CallCLR(string DllName, string ClassWithNamespace, string MethodName, vect
 
 				// create a new Object^ array with data types that
 				// corresponds to what the .NET method expects
-				cli::array<Object ^> ^params = gcnew cli::array<Object ^>(Args.size());
-				for (int i=0; i<(int)Args.size(); i++)
+				cli::array<Object^>^ params = gcnew cli::array<Object^>(Args.size());
+				for (int i = 0; i < (int)Args.size(); i++)
 				{
 					if (paraminfos[i]->ParameterType->FullName == "System.String")
 						params[i] = Convert::ToString(gcnew String(Args[i].c_str()));
@@ -113,7 +126,7 @@ char* CallCLR(string DllName, string ClassWithNamespace, string MethodName, vect
 				char* result;
 
 				// invoke method and return any value
-				System::Object ^retValue = methodinfo->Invoke(instance, params);
+				System::Object^ retValue = methodinfo->Invoke(instance, params);
 				if (retValue != nullptr)
 					result = (char*)(void*)System::Runtime::InteropServices::Marshal::StringToHGlobalAnsi(retValue->ToString());
 				else
@@ -159,9 +172,9 @@ char* CallCLR(string DllName, string ClassWithNamespace, string MethodName, vect
 
 		return "";
 	}
-	catch (System::Exception ^ex)
+	catch (System::Exception^ ex)
 	{
-		String ^msg = "Error calling .NET DLL method\n\n" + ex->Message;
+		String^ msg = "Error calling .NET DLL method\n\n" + ex->Message;
 		Windows::Forms::MessageBox::Show(msg);
 
 
@@ -177,16 +190,19 @@ char* CallCLR(string DllName, string ClassWithNamespace, string MethodName, vect
 
 		return "";
 	}
+	finally {
+		MyData::currentLoadPath = nullptr;
+	}
 }
 
-extern "C" __declspec(dllexport) void Call(HWND hwndParent, int string_size, 
-                                      char *variables, stack_t **stacktop,
-                                      extra_parameters *extra)
+extern "C" __declspec(dllexport) void Call(HWND hwndParent, int string_size,
+	char* variables, stack_t * *stacktop,
+	extra_parameters * extra)
 {
 	// expected parameters:
 	// filename.dll, namespace.namespace...class, method, numparams, params...
 
-	g_hwndParent=hwndParent;
+	g_hwndParent = hwndParent;
 	EXDLL_INIT();
 
 	char buf[1024];
@@ -209,13 +225,13 @@ extern "C" __declspec(dllexport) void Call(HWND hwndParent, int string_size,
 
 	// params
 	vector<string> args;
-	for (int i=0; i<numparams; i++)
+	for (int i = 0; i < numparams; i++)
 	{
 		popstring(buf);
 		string tmp = string(buf);
 		args.push_back(tmp);
 	}
-	
+
 
 	char* result = (char*)CallCLR(dllname, classwithnamespace, method, args);
 
